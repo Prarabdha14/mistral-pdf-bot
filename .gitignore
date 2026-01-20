@@ -1,0 +1,15 @@
+# Ignore the virtual environment
+venv/
+env/
+.env
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore system files
+.DS_Store
+
+# Ignore data (Optional: Keep this if you want to keep your PDF private)
+data/
+*.pdf
