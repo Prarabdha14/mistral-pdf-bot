@@ -13,3 +13,7 @@ __pycache__/
 # Ignore data (Optional: Keep this if you want to keep your PDF private)
 data/
 *.pdf
+
+volumes/
+.env
+__pycache__/
