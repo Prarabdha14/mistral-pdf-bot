@@ -7,7 +7,7 @@ pdf_path = "data/NIPS-2017-attention-is-all-you-need-Paper.pdf"
 print("📖 Reading PDF with Unstructured... (This might take a moment)")
 
 # The 'partition_pdf' function breaks the document into elements (Title, NarrativeText, etc.)
-elements = partition_pdf(
+elements = partition_pdf(                                               
     filename=pdf_path,
     strategy="hi_res",           # uses layout detection (slower but smarter)
     infer_table_structure=True   # tries to extract tables

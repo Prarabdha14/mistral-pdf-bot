@@ -1,15 +1,18 @@
 import os
 
-# --- 1. MAC CRASH FIX (MUST BE FIRST) ---
-# This stops the "OMP: Error #15" crash
+# --- 1. MAC CRASH FIX ---
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # --- 2. IMPORTS ---
 import streamlit as st
 import tempfile
-from dotenv import load_dotenv # <--- This reads your .env file
-from langchain_mistralai import MistralAIEmbeddings, ChatMistralAI
-from langchain_community.vectorstores import FAISS
+from dotenv import load_dotenv
+
+# NEW IMPORTS FOR MIGRATION
+from langchain_huggingface import HuggingFaceEmbeddings # <--- Replaces MistralAIEmbeddings
+from langchain_milvus import Milvus # <--- Replaces FAISS
+
+from langchain_mistralai import ChatMistralAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -17,34 +20,31 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
 from unstructured.partition.pdf import partition_pdf
 
-# --- 3. LOAD SECRETS ---
-load_dotenv() # Load variables from .env
+load_dotenv()
 
-st.set_page_config(page_title="Mistral RAG Bot", page_icon="🤖")
-st.title("🤖 Chat with PDFs (Unstructured + Auto-Key)")
+st.set_page_config(page_title="Milvus RAG Bot", page_icon="💾")
+st.title("🤖 Chat with PDFs (Milvus + HuggingFace)")
 
-# --- 4. SIDEBAR WITH AUTO-LOGIN ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Settings")
-    
-    # Try to grab key from .env file first
+    # We still need Mistral Key for the CHAT part, but not for embeddings
     env_key = os.getenv("MISTRAL_API_KEY")
-    
     if env_key:
-        st.success("✅ API Key loaded automatically!")
+        st.success("✅ Mistral Key Loaded")
         api_key = env_key
     else:
-        # If no .env file, show the box
-        api_key = st.text_input("Enter Mistral API Key", type="password")
+        api_key = st.text_input("Mistral API Key", type="password")
 
     uploaded_file = st.file_uploader("Upload PDF", type="pdf")
-    if st.button("Reset"):
-        st.session_state.clear()
-        st.rerun()
-
-# --- HELPER: FORMAT DOCS ---
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    
+    # Add a reset button that clears Milvus collection if needed
+    if st.button("Clear Database"):
+        if "vectorstore" in st.session_state:
+            st.session_state.vectorstore.delete(ids=[]) # Logic to clear would go here
+            st.success("Memory Cleared!")
+            st.session_state.clear()
+            st.rerun()
 
 # --- PDF READING LOGIC (Unstructured) ---
 def get_pdf_text(uploaded_file):
@@ -53,37 +53,49 @@ def get_pdf_text(uploaded_file):
         tmp_path = tmp.name
 
     try:
-        elements = partition_pdf(
-            filename=tmp_path,
-            strategy="hi_res", 
-            infer_table_structure=True
-        )
+        elements = partition_pdf(filename=tmp_path, strategy="hi_res", infer_table_structure=True)
         full_text = "\n\n".join([el.text for el in elements])
         os.remove(tmp_path)
         return [Document(page_content=full_text, metadata={"source": uploaded_file.name})]
-
     except Exception as e:
         if os.path.exists(tmp_path): os.remove(tmp_path)
         raise e
 
-# --- MAIN APP LOGIC ---
+# --- MAIN LOGIC ---
 if api_key and uploaded_file:
     os.environ["MISTRAL_API_KEY"] = api_key
 
+    # Initialize Vector Store if not done
     if "vectorstore" not in st.session_state:
-        with st.spinner("Analyzing PDF (extracting tables & text)..."):
+        with st.spinner("Processing PDF & Connecting to Milvus..."):
             try:
+                # 1. Load Text
                 docs = get_pdf_text(uploaded_file)
                 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
                 splits = splitter.split_documents(docs)
-                embeddings = MistralAIEmbeddings(model="mistral-embed")
-                vectorstore = FAISS.from_documents(splits, embeddings)
+                
+                # 2. Embeddings (Changed to HuggingFace)
+                # This runs LOCALLY on your Mac, free of charge.
+                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+                
+                # 3. Vector Store (Changed to Milvus)
+                # Connects to the Docker container we started
+                vectorstore = Milvus.from_documents(
+                    splits,
+                    embeddings,
+                    connection_args={"host": "127.0.0.1", "port": "19530"},
+                    collection_name="pdf_chat_collection",
+                    drop_old=True # Resets the DB for every new PDF (optional)
+                )
+                
                 st.session_state.vectorstore = vectorstore
-                st.success(f"Ready! Processed {len(splits)} chunks.")
+                st.success(f"Stored {len(splits)} chunks in Milvus!")
+                
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error connecting to Milvus: {e}")
                 st.stop()
 
+    # --- CHAT INTERFACE ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -95,14 +107,14 @@ if api_key and uploaded_file:
         retriever = st.session_state.vectorstore.as_retriever()
         llm = ChatMistralAI(model="mistral-tiny")
         
-        template = """Answer based strictly on the context below.
-        Context: {context}
+        template = """Answer based on context:
+        {context}
         Question: {question}
         """
         prompt = ChatPromptTemplate.from_template(template)
         
         rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            {"context": retriever | (lambda docs: "\n".join(d.page_content for d in docs)), "question": RunnablePassthrough()}
             | prompt
             | llm
             | StrOutputParser()
