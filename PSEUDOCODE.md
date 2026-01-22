@@ -92,3 +92,51 @@ BEGIN
     
     OUTPUT "Ready to Chat"
 END
+
+## Phase 4: Hybrid Architecture (Local Embeddings + Cloud Chat)
+ Optimize for cost and scalability while maintaining high intelligence for answers.
+ Unstructured (Parser) -> LangChain (Chunker) -> Hugging Face (Local Embedder) -> Milvus (DB) -> Mistral (Cloud LLM)
+
+## pseudocode
+BEGIN
+    INPUT pdf_file
+    
+    # 1. Parse & Chunk (Standard)
+    raw_text = Unstructured.partition_pdf(pdf_file)
+    chunks = RecursiveCharacterTextSplitter(raw_text, size=1000)
+    
+    # 2. Local Embedding (NEW)
+    # Uses CPU-optimized model 'all-MiniLM-L6-v2' ~80MB size
+    vector_list = []
+    FOR chunk IN chunks:
+        vector = HuggingFaceModel.encode(chunk) # Returns list of 384 floats
+        vector_list.append(vector)
+        
+    # 3. Persistent Storage (NEW)
+    # Connect to Docker Container
+    DB_Connection = Milvus.connect(host="localhost", port="19530")
+    
+    # Insert vectors into collection
+    DB_Connection.insert(collection="pdf_chat", vectors=vector_list)
+    
+    OUTPUT "Stored Successfully in Docker"
+END
+
+## Retrieval Algorithm 
+BEGIN
+    INPUT User_Question
+    
+    # 1. Embed Question Locally
+    query_vector = HuggingFaceModel.encode(User_Question)
+    
+    # 2. Vector Search (Milvus)
+    # Finds top 4 matches based on Cosine Similarity
+    matched_chunks = Milvus.search(query_vector, k=4)
+    
+    # 3. Cloud Generation
+    # We only send the small matched text to the cloud, not the whole PDF
+    Prompt = "Context: " + matched_chunks + " Question: " + User_Question
+    Answer = MistralAPI.generate(Prompt)
+    
+    RETURN Answer
+END
